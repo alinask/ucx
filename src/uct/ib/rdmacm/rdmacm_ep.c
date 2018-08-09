@@ -12,10 +12,10 @@ ucs_status_t uct_rdmacm_ep_resolve_addr(uct_rdmacm_ep_t *ep)
 
     UCS_ASYNC_BLOCK(iface->super.worker->async);
 
-    status = uct_rdmacm_resolve_addr(ep->cm_id_ctx->cm_id,
-                                    (struct sockaddr *)&ep->remote_addr,
-                                    UCS_MSEC_PER_SEC * iface->config.addr_resolve_timeout,
-                                    UCS_LOG_LEVEL_ERROR);
+    status = uct_ib_sockaddr_rdmacm_resolve_addr(ep->cm_id_ctx->cm_id,
+                                                 (struct sockaddr *)&ep->remote_addr,
+                                                 UCS_MSEC_PER_SEC * iface->config.addr_resolve_timeout,
+                                                 UCS_LOG_LEVEL_ERROR);
 
     UCS_ASYNC_UNBLOCK(iface->super.worker->async);
     return status;

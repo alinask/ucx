@@ -184,14 +184,20 @@ out:
         uct_ib_address_t *ib_addr;
         uint16_t lid_out;
         uint8_t is_global;
+        struct sockaddr_storage addr;
+        uct_ib_iface_t *iface = ucs_derived_of(m_e1->iface(), uct_ib_iface_t);
 
-        ib_addr = (uct_ib_address_t*)malloc(uct_ib_address_size(scope));
+        ib_addr = (uct_ib_address_t*)malloc(uct_ib_address_size(scope,
+                                                                iface->config.sockaddr_connect));
 
         gid_in.global.subnet_prefix = subnet_prefix;
         gid_in.global.interface_id  = 0xdeadbeef;
-        uct_ib_address_pack(ib_device(m_e1), scope, &gid_in, lid_in, ib_addr);
+        uct_ib_address_pack(ib_device(m_e1), iface->config.port_num,
+                            scope, &gid_in, lid_in,
+                            iface->config.sockaddr_connect,
+                            ib_addr);
 
-        uct_ib_address_unpack(ib_addr, &lid_out, &is_global, &gid_out);
+        uct_ib_address_unpack(ib_addr, &lid_out, &is_global, &gid_out, &addr);
 
         EXPECT_EQ((scope != UCT_IB_ADDRESS_TYPE_LINK_LOCAL), is_global);
         EXPECT_EQ(lid_in, lid_out);

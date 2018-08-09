@@ -271,6 +271,8 @@ ucs_status_t uct_ud_ep_get_address(uct_ep_h tl_ep, uct_ep_addr_t *addr)
 
     uct_ib_pack_uint24(ep_addr->iface_addr.qp_num, iface->qp->qp_num);
     uct_ib_pack_uint24(ep_addr->ep_id, ep->ep_id);
+    ep_addr->iface_addr.sockaddr_port = iface->super.sockaddr_port;
+
     return UCS_OK;
 }
 

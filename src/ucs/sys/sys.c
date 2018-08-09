@@ -671,6 +671,44 @@ int ucs_netif_is_active(const char *if_name)
            !(ifr.ifr_flags & IFF_LOOPBACK);
 }
 
+int ucs_is_rdmacm_netdev(const char *ifa_name) {
+    struct dirent *entry;
+    char path[PATH_MAX];
+    char dev_name[16];
+    char guid_buf[32];
+    DIR *dir;
+
+    snprintf(path, PATH_MAX, "/sys/class/net/%s/device/infiniband", ifa_name);
+    dir = opendir(path);
+    if (dir == NULL) {
+        return 0;
+    }
+
+    /* read IB device name */
+    for (;;) {
+        entry = readdir(dir);
+        if (entry == NULL) {
+            closedir(dir);
+            return 0;
+        } else if (entry->d_name[0] != '.') {
+            ucs_strncpy_zero(dev_name, entry->d_name, sizeof(dev_name));
+            break;
+        }
+    }
+    closedir(dir);
+
+    /* read node guid */
+    memset(guid_buf, 0, sizeof(guid_buf));
+    ssize_t nread = ucs_read_file(guid_buf, sizeof(guid_buf), 1,
+                                  "/sys/class/infiniband/%s/node_guid", dev_name);
+    if (nread < 0) {
+        return 0;
+    }
+
+    /* use the device if node_guid != 0 */
+    return strstr(guid_buf, "0000:0000:0000:0000") == NULL;
+}
+
 ucs_status_t ucs_mmap_alloc(size_t *size, void **address_p,
                             int flags UCS_MEMTRACK_ARG)
 {

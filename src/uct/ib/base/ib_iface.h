@@ -15,10 +15,14 @@
 #include <ucs/config/parser.h>
 #include <ucs/datastruct/mpool.inl>
 #include <ucs/sys/math.h>
+#include <ucs/sys/string.h>
+#include <linux/ip.h>
 
 #define UCT_IB_MAX_IOV                     8UL
 #define UCT_IB_IFACE_NULL_RES_DOMAIN_KEY   0u
 
+#define UCT_IPV4_ADDR_LEN sizeof(struct in_addr)
+#define UCT_IPV6_ADDR_LEN sizeof(struct in6_addr)
 
 /* Forward declarations */
 typedef struct uct_ib_iface_config   uct_ib_iface_config_t;
@@ -96,6 +100,9 @@ struct uct_ib_iface_config {
 
     /* Multiple resource domains */
     int                     enable_res_domain;
+
+    /* Whether or not connection through sockaddr should be used on an Ethernet network */
+    int                     sockaddr_connect;
 };
 
 
@@ -135,6 +142,13 @@ struct uct_ib_iface {
     union ibv_gid           gid;
     uct_ib_iface_res_domain_t *res_domain;
 
+#ifdef HAVE_RDMACM
+    struct rdma_cm_id          *cm_id;
+    struct rdma_event_channel  *event_ch;
+#endif
+
+    in_port_t               sockaddr_port;
+
     struct {
         unsigned            rx_payload_offset;   /* offset from desc to payload */
         unsigned            rx_hdr_offset;       /* offset from desc to network header */
@@ -149,6 +163,7 @@ struct uct_ib_iface {
         uint8_t             traffic_class;
         int                 enable_res_domain;   /* Disable multiple resource domains */
         size_t              max_iov;             /* Maximum buffers in IOV array */
+        int                 sockaddr_connect;
     } config;
 
     uct_ib_iface_ops_t      *ops;
@@ -293,6 +308,11 @@ ucs_status_t uct_ib_iface_arm_cq(uct_ib_iface_t *iface,
                                  uct_ib_dir_t dir,
                                  int solicited_only);
 
+size_t uct_ib_iface_calc_gid_len(union ibv_gid *gid);
+
+void uct_ib_iface_fill_ah_from_sockaddr(struct sockaddr_storage *addr,
+                                        struct ibv_ah_attr *ah_attr);
+
 static inline uint8_t uct_ib_iface_get_atomic_mr_id(uct_ib_iface_t *iface)
 {
     return uct_ib_md_get_atomic_mr_id(ucs_derived_of(iface->super.md, uct_ib_md_t));
@@ -405,21 +425,30 @@ void uct_ib_iface_fill_ah_attr_from_gid_lid(uct_ib_iface_t *iface, uint16_t lid,
 static UCS_F_ALWAYS_INLINE
 void uct_ib_iface_fill_ah_attr_from_addr(uct_ib_iface_t *iface,
                                          const uct_ib_address_t *ib_addr,
-                                         uint8_t path_bits,
+                                         uint8_t path_bits, in_port_t sockaddr_port,
                                          struct ibv_ah_attr *ah_attr)
 {
     union ibv_gid *gid_p = NULL;
     union ibv_gid  gid;
     uint8_t        is_global;
     uint16_t       lid;
+    struct sockaddr_storage addr;
+    char ip_port_str[UCS_SOCKADDR_STRING_LEN];
 
-    uct_ib_address_unpack(ib_addr, &lid, &is_global, &gid);
+    uct_ib_address_unpack(ib_addr, &lid, &is_global, &gid, &addr);
 
-    if (is_global) {
-        gid_p = &gid;
+    if (ib_addr->flags & UCT_IB_ADDRESS_FLAG_SOCKADDR) {
+        ucs_assert(sockaddr_port != 0);
+        ((struct sockaddr_in*)&addr)->sin_port = sockaddr_port;
+        ucs_debug("client will connect to remote server: %s",
+                  ucs_sockaddr_str((struct sockaddr *)&addr, ip_port_str, UCS_SOCKADDR_STRING_LEN));
+        uct_ib_iface_fill_ah_from_sockaddr(&addr, ah_attr);
+    } else {
+        if (is_global) {
+            gid_p = &gid;
+        }
+        uct_ib_iface_fill_ah_attr_from_gid_lid(iface, lid, gid_p, path_bits, ah_attr);
     }
-
-    uct_ib_iface_fill_ah_attr_from_gid_lid(iface, lid, gid_p, path_bits, ah_attr);
 }
 
 #endif

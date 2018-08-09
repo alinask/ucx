@@ -372,8 +372,9 @@ uct_dc_iface_get_address(uct_iface_h tl_iface, uct_iface_addr_t *iface_addr)
     uct_dc_iface_addr_t *addr  = (uct_dc_iface_addr_t *)iface_addr;
 
     uct_ib_pack_uint24(addr->qp_num, iface->rx.dct->dct_num);
-    addr->atomic_mr_id = uct_ib_iface_get_atomic_mr_id(&iface->super.super);
-    addr->flags        = iface->version_flag;
+    addr->atomic_mr_id  = uct_ib_iface_get_atomic_mr_id(&iface->super.super);
+    addr->sockaddr_port = iface->super.super.sockaddr_port;
+    addr->flags         = iface->version_flag;
     if (UCT_RC_IFACE_TM_ENABLED(&iface->super)) {
         addr->flags   |= UCT_DC_IFACE_ADDR_HW_TM;
     }

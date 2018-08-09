@@ -100,7 +100,7 @@ uct_dc_mlx5_ep_create_connected(uct_iface_h tl_iface,
     ucs_trace_func("");
     status = uct_ud_mlx5_iface_get_av(&iface->super.super.super, &iface->ud_common,
                                       ib_addr, iface->super.super.super.path_bits[0],
-                                      &av, &grh_av, &is_global);
+                                      if_addr->sockaddr_port, &av, &grh_av, &is_global);
     if (status != UCS_OK) {
         return UCS_ERR_INVALID_ADDR;
     }

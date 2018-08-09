@@ -250,6 +250,7 @@ struct uct_ud_ep {
     uint8_t          path_bits;
     ucs_wtimer_t     slow_timer;
     ucs_time_t       close_time;   /* timestamp of closure */
+    union ibv_gid    gid;
     UCS_STATS_NODE_DECLARE(stats);
     UCT_UD_EP_HOOK_DECLARE(timer_hook);
 #if ENABLE_DEBUG_DATA

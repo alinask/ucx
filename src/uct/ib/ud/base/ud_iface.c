@@ -17,9 +17,6 @@
 #include <linux/ip.h>
 
 
-#define UCT_UD_IPV4_ADDR_LEN sizeof(struct in_addr)
-#define UCT_UD_IPV6_ADDR_LEN sizeof(struct in6_addr)
-
 #if ENABLE_STATS
 static ucs_stats_class_t uct_ud_iface_stats_class = {
     .name = "ud_iface",
@@ -101,8 +98,9 @@ uct_ud_iface_cep_lookup_peer(uct_ud_iface_t *iface,
     union ibv_gid dgid;
     uint8_t is_global;
     uint16_t dlid;
+    struct sockaddr_storage addr;
 
-    uct_ib_address_unpack(src_ib_addr, &dlid, &is_global, &dgid);
+    uct_ib_address_unpack(src_ib_addr, &dlid, &is_global, &dgid, &addr);
     return uct_ud_iface_cep_lookup_addr(iface, dlid, &dgid, dest_qpn);
 }
 
@@ -153,9 +151,10 @@ ucs_status_t uct_ud_iface_cep_insert(uct_ud_iface_t *iface,
     uint8_t is_global;
     uct_ud_ep_t *cep;
     uint16_t dlid;
+    struct sockaddr_storage addr;
 
-    uct_ib_address_unpack(src_ib_addr, &dlid, &is_global, &dgid);
-    peer = uct_ud_iface_cep_lookup_addr(iface, dlid, &dgid, dest_qpn);
+    uct_ib_address_unpack(src_ib_addr, &dlid, &is_global, &dgid, &addr);
+    peer = uct_ud_iface_cep_lookup_addr(iface, dlid, &dgid, dest_qpn);  ///!!!!!!!!
     if (peer == NULL) {
         peer = malloc(sizeof *peer);
         if (peer == NULL) {
@@ -392,39 +391,6 @@ void uct_ud_iface_remove_async_handlers(uct_ud_iface_t *iface)
     ucs_async_remove_handler(iface->async.timer_id, 1);
 }
 
-/* Calculate real GIDs len. Can be either 16 (RoCEv1 or RoCEv2/IPv6)
- * or 4 (RoCEv2/IPv4). This len is used for packets filtering by DGIDs.
- *
- * According to Annex17_RoCEv2 (A17.4.5.2):
- * "The first 40 bytes of user posted UD Receive Buffers are reserved for the L3
- * header of the incoming packet (as per the InfiniBand Spec Section 11.4.1.2).
- * In RoCEv2, this area is filled up with the IP header. IPv6 header uses the
- * entire 40 bytes. IPv4 headers use the 20 bytes in the second half of the
- * reserved 40 bytes area (i.e. offset 20 from the beginning of the receive
- * buffer). In this case, the content of the first 20 bytes is undefined." */
-static void uct_ud_iface_calc_gid_len(uct_ud_iface_t *iface)
-{
-    uint16_t *local_gid_u16 = (uint16_t*)iface->super.gid.raw;
-
-    /* Make sure that daddr in IPv4 resides in the last 4 bytes in GRH */
-    UCS_STATIC_ASSERT((UCT_IB_GRH_LEN - (20 + offsetof(struct iphdr, daddr))) ==
-                      UCT_UD_IPV4_ADDR_LEN);
-
-    /* Make sure that dgid resides in the last 16 bytes in GRH */
-    UCS_STATIC_ASSERT((UCT_IB_GRH_LEN - offsetof(struct ibv_grh, dgid)) ==
-                      UCT_UD_IPV6_ADDR_LEN);
-
-    /* IPv4 mapped to IPv6 looks like: 0000:0000:0000:0000:0000:ffff:????:????,
-     * so check for leading zeroes and verify that 11-12 bytes are 0xff.
-     * Otherwise either RoCEv1 or RoCEv2/IPv6 are used. */
-    if (local_gid_u16[0] == 0x0000) {
-        ucs_assert_always(local_gid_u16[5] == 0xffff);
-        iface->config.gid_len = UCT_UD_IPV4_ADDR_LEN;
-    } else {
-        iface->config.gid_len = UCT_UD_IPV6_ADDR_LEN;
-    }
-}
-
 UCS_CLASS_INIT_FUNC(uct_ud_iface_t, uct_ud_iface_ops_t *ops, uct_md_h md,
                     uct_worker_h worker, const uct_iface_params_t *params,
                     unsigned ud_rx_priv_len, uint32_t res_domain_key,
@@ -535,8 +501,6 @@ UCS_CLASS_INIT_FUNC(uct_ud_iface_t, uct_ud_iface_ops_t *ops, uct_md_h md,
     ucs_queue_head_init(&self->rx.pending_q);
 
     self->tx.async_before_pending = 0;
-
-    uct_ud_iface_calc_gid_len(self);
 
     status = UCS_STATS_NODE_ALLOC(&self->stats, &uct_ud_iface_stats_class,
                                   self->super.super.stats);
@@ -654,6 +618,7 @@ uct_ud_iface_get_address(uct_iface_h tl_iface, uct_iface_addr_t *iface_addr)
     uct_ud_iface_addr_t *addr = (uct_ud_iface_addr_t *)iface_addr;
 
     uct_ib_pack_uint24(addr->qp_num, iface->qp->qp_num);
+    addr->sockaddr_port = iface->super.sockaddr_port;
 
     return UCS_OK;
 }

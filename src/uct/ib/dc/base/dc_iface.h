@@ -35,6 +35,7 @@ typedef struct uct_dc_iface_addr {
     uct_ib_uint24_t   qp_num;
     uint8_t           atomic_mr_id;
     uint8_t           flags;
+    in_port_t         sockaddr_port;
 } UCS_S_PACKED uct_dc_iface_addr_t;
 
 

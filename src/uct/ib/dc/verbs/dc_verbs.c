@@ -42,7 +42,8 @@ static UCS_CLASS_INIT_FUNC(uct_dc_verbs_ep_t,
     ucs_trace_func("");
     UCS_CLASS_CALL_SUPER_INIT(uct_dc_ep_t, &iface->super, if_addr);
 
-    uct_ib_iface_fill_ah_attr_from_addr(ib_iface, ib_addr, ib_iface->path_bits[0], &ah_attr);
+    uct_ib_iface_fill_ah_attr_from_addr(ib_iface, ib_addr, ib_iface->path_bits[0],
+                                        if_addr->sockaddr_port ,&ah_attr);
     status = uct_ib_iface_create_ah(ib_iface, &ah_attr, &self->ah);
     if (status != UCS_OK) {
         return status;

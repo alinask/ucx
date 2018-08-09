@@ -7,6 +7,7 @@
 #define UCT_RDMACM_MD_H_
 
 #include "rdmacm_def.h"
+#include <uct/ib/base/ib_sockaddr.h>
 #include <uct/base/uct_md.h>
 #include <ucs/sys/string.h>
 #include <ucs/time/time.h>

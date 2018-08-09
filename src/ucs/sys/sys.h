@@ -347,6 +347,14 @@ int ucs_netif_is_active(const char *if_name);
 
 
 /**
+ * Check if the given network interface is supported by rdmacm.
+ *
+ * @param [in]  if_name      Interface name to test.
+ */
+int ucs_is_rdmacm_netdev(const char *ifa_name);
+
+
+/**
  * Create a socket.
  *
  * @param [out]  fd_p       Pointer to created fd.

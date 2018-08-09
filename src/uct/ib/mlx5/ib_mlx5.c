@@ -73,7 +73,8 @@ ucs_status_t uct_ib_mlx5_get_compact_av(uct_ib_iface_t *iface, int *compact_av)
         return status;
     }
 
-    uct_ib_iface_fill_ah_attr_from_addr(iface, ib_addr, iface->path_bits[0], &ah_attr);
+    uct_ib_iface_fill_ah_attr_from_addr(iface, ib_addr, iface->path_bits[0],
+                                        iface->sockaddr_port, &ah_attr);//using own address and not remote?
     status = uct_ib_iface_create_ah(iface, &ah_attr, &ah);
     if (status != UCS_OK) {
         return status;

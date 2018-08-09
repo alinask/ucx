@@ -40,7 +40,7 @@ typedef uint16_t                 uct_ud_psn_t;
 typedef struct uct_ud_iface      uct_ud_iface_t;
 typedef struct uct_ud_ep         uct_ud_ep_t;
 typedef struct uct_ud_ctl_hdr    uct_ud_ctl_hdr_t;
-typedef uct_ib_qpnum_t           uct_ud_iface_addr_t;
+//typedef uct_ib_qpnum_t           uct_ud_iface_addr_t;
 typedef struct uct_ud_ep_addr    uct_ud_ep_addr_t;
 typedef struct uct_ud_iface_peer uct_ud_iface_peer_t;
 
@@ -201,9 +201,10 @@ typedef struct uct_ud_put_hdr {
 } UCS_S_PACKED uct_ud_put_hdr_t;
 
 
-struct uct_ud_iface_addr {
-    uct_ib_uint24_t     qp_num;
-};
+typedef struct uct_ud_iface_addr {
+    uct_ib_uint24_t   qp_num;
+    in_port_t         sockaddr_port;
+} UCS_S_PACKED uct_ud_iface_addr_t;
 
 
 struct uct_ud_ep_addr {

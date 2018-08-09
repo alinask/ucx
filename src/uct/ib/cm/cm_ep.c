@@ -26,11 +26,12 @@ static UCS_CLASS_INIT_FUNC(uct_cm_ep_t, uct_iface_t *tl_iface,
 
 {
     uct_cm_iface_t *iface = ucs_derived_of(tl_iface, uct_cm_iface_t);
+    struct sockaddr_storage addr;
 
     UCS_CLASS_CALL_SUPER_INIT(uct_base_ep_t, &iface->super.super);
 
     uct_ib_address_unpack((const uct_ib_address_t*)dev_addr, &self->dlid,
-                          &self->is_global, &self->dgid);
+                          &self->is_global, &self->dgid, &addr);
     self->dest_service_id = *(const uint32_t*)iface_addr;
     return UCS_OK;
 }

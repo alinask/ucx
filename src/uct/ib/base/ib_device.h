@@ -14,6 +14,7 @@
 #include <ucs/debug/assert.h>
 
 #include <endian.h>
+#include <netinet/in.h>
 
 
 #define UCT_IB_QPN_ORDER            24  /* How many bits can be an IB QP number */
@@ -78,9 +79,10 @@ enum {
     UCT_IB_ADDRESS_FLAG_IF_ID    = UCS_BIT(1),
     UCT_IB_ADDRESS_FLAG_SUBNET16 = UCS_BIT(2),
     UCT_IB_ADDRESS_FLAG_SUBNET64 = UCS_BIT(3),
-    UCT_IB_ADDRESS_FLAG_GID  = UCS_BIT(4),
-    UCT_IB_ADDRESS_FLAG_LINK_LAYER_IB = UCS_BIT(5),
-    UCT_IB_ADDRESS_FLAG_LINK_LAYER_ETH = UCS_BIT(6)
+    UCT_IB_ADDRESS_FLAG_GID      = UCS_BIT(4),
+    UCT_IB_ADDRESS_FLAG_SOCKADDR = UCS_BIT(5),
+    UCT_IB_ADDRESS_FLAG_LINK_LAYER_IB  = UCS_BIT(6),
+    UCT_IB_ADDRESS_FLAG_LINK_LAYER_ETH = UCS_BIT(7)
 };
 
 
@@ -204,22 +206,28 @@ uct_ib_address_type_t uct_ib_address_scope(uint64_t subnet_prefix);
 /**
  * @return IB address size of the given link scope.
  */
-size_t uct_ib_address_size(uct_ib_address_type_t type);
+size_t uct_ib_address_size(uct_ib_address_type_t type, int sockaddr_connect);
 
 
 /**
  * Pack IB address.
  *
- * @param [in]  dev        IB device. TODO remove this.
- * @param [in]  scope      Address scope.
- * @param [in]  gid        GID address to pack.
- * @param [in]  lid        LID address to pack.
- * @param [out] ib_addr    Filled with packed ib address. Size of the structure
- *                         must be at least what @ref uct_ib_address_size() returns
- *                         for the given scope.
+ * @param [in]  dev              IB device. TODO remove this.
+ * @param [in]  port_num         Port num.
+ * @param [in]  scope            Address scope.
+ * @param [in]  gid              GID address to pack.
+ * @param [in]  lid              LID address to pack.
+ * @param [in]  sockaddr_connect Whether or not to pack the port's sockaddr
+ * @param [out] ib_addr          Filled with packed ib address.
+ *                               Size of the structure
+ *                               must be at least what
+ *                               @ref uct_ib_address_size() returns
+ *                               for the given scope.
  */
-void uct_ib_address_pack(uct_ib_device_t *dev, uct_ib_address_type_t scope,
+void uct_ib_address_pack(uct_ib_device_t *dev, uint8_t port_num,
+                         uct_ib_address_type_t scope,
                          const union ibv_gid *gid, uint16_t lid,
+                         int sockaddr_connect,
                          uct_ib_address_t *ib_addr);
 
 
@@ -229,9 +237,12 @@ void uct_ib_address_pack(uct_ib_device_t *dev, uct_ib_address_type_t scope,
  * @param [in]  ib_addr    IB address to unpack.
  * @param [out] lid        Filled with address LID, or 0 if not present.
  * @param [out] is_global  Filled with 0, or 1 if the address is IB global
+ * @param [out] gid        Filled with address GID if it's present.
+ * @param [out] addr       Filled with sockaddr address if it's present.
  */
 void uct_ib_address_unpack(const uct_ib_address_t *ib_addr, uint16_t *lid,
-                           uint8_t *is_global, union ibv_gid *gid);
+                           uint8_t *is_global, union ibv_gid *gid,
+                           struct sockaddr_storage *addr);
 
 
 /**
@@ -275,6 +286,9 @@ ucs_status_t
 uct_ib_device_query_gid(uct_ib_device_t *dev, uint8_t port_num, unsigned gid_index,
                         union ibv_gid *gid);
 
+
+uint8_t uct_ib_device_get_gid_index(uct_ib_device_t *dev, uint8_t port_num,
+                                    void *grh_end);
 
 static inline ucs_status_t uct_ib_poll_cq(struct ibv_cq *cq, unsigned *count, struct ibv_wc *wcs)
 {

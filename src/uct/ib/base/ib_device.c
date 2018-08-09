@@ -6,6 +6,7 @@
 
 #include "ib_device.h"
 #include "ib_md.h"
+#include "ib_iface.h"
 
 #include <ucs/arch/bitops.h>
 #include <ucs/debug/memtrack.h>
@@ -16,6 +17,8 @@
 #include <ucs/sys/sys.h>
 #include <sys/poll.h>
 #include <sched.h>
+#include <dirent.h>
+#include <ifaddrs.h>
 
 
 #if ENABLE_STATS
@@ -475,7 +478,7 @@ uct_ib_address_type_t uct_ib_address_scope(uint64_t subnet_prefix)
     }
 }
 
-size_t uct_ib_address_size(uct_ib_address_type_t type)
+size_t uct_ib_address_size(uct_ib_address_type_t type, int sockaddr_connect)
 {
     switch (type) {
     case UCT_IB_ADDRESS_TYPE_LINK_LOCAL:
@@ -493,17 +496,132 @@ size_t uct_ib_address_size(uct_ib_address_type_t type)
                sizeof(uint64_t);  /* subnet64 */
     case UCT_IB_ADDRESS_TYPE_ETH:
         return sizeof(uct_ib_address_t) +
-               sizeof(union ibv_gid);  /* raw gid */
+               /* one sockaddr per IB port or raw gid */
+               (sockaddr_connect ? sizeof(struct sockaddr_in) : sizeof(union ibv_gid)); //ipv4 for now
     default:
         ucs_fatal("Invalid IB address type: %d", type);
     }
 }
 
-void uct_ib_address_pack(uct_ib_device_t *dev, uct_ib_address_type_t type,
+/*
+ * Fill the IP address of the given port.
+ */
+static ucs_status_t uct_ib_get_port_sockaddr(uct_ib_device_t *dev, uint8_t port_num,
+                                             struct sockaddr_storage *addr)
+{
+    char path[PATH_MAX], dev_port_path[PATH_MAX], dev_id_path[PATH_MAX];
+    DIR *dir;
+    struct dirent *entry;
+    FILE *dev_port_f, *dev_id_f;
+    char iface_name[16];
+    char dev_port[8], dev_id[8];
+    char *endptr;
+    int dev_id_val;
+    struct ifaddrs* ifaddrs;
+    struct ifaddrs *ifa;
+    ucs_status_t status = UCS_ERR_IO_ERROR;
+
+    ucs_snprintf_zero(path, PATH_MAX, "%s/device/net/", dev->ibv_context->device->dev_path);
+    dir = opendir(path);
+    if (dir == NULL) {
+        ucs_error("Error reading IB device's dev_path");
+        goto out;
+    }
+
+    /* find the port's interface name */
+    for (;;) {
+        entry = readdir(dir);
+        if (entry == NULL) {
+            closedir(dir);
+            goto out;
+        } else if (entry->d_name[0] != '.') {
+            ucs_snprintf_zero(dev_port_path, PATH_MAX,
+                              "%s%s/dev_port", path, entry->d_name);
+            dev_port_f = fopen(dev_port_path, "r");
+            if (dev_port_f == NULL) {
+                ucs_error("failed to open '%s': %m", dev_port_path);
+                goto out_close_dir;
+            }
+
+            if (fgets(dev_port, sizeof(dev_port), dev_port_f) == NULL) {
+                ucs_error("Error reading from file %s", dev_port_path);
+                goto out_close_dev_port_f;
+            }
+
+            ucs_snprintf_zero(dev_id_path, PATH_MAX,
+                              "%s%s/dev_id", path, entry->d_name);
+            dev_id_f = fopen(dev_id_path, "r");
+            if (dev_port_f == NULL) {
+                ucs_error("failed to open '%s': %m", dev_id_path);
+                goto out_close_dev_port_f;
+            }
+
+            if (fgets(dev_id, sizeof(dev_id), dev_id_f) != NULL) {
+                /* dev_id is represented in hex */
+                dev_id_val = strtol(dev_id, &endptr, 16);
+                if (*endptr == '\0') {
+                    ucs_error("strtol failed");
+                    goto out_close_dev_id_f;
+                }
+            } else {
+                ucs_error("Error reading from file %s", path);
+                goto out_close_dev_id_f;
+            }
+
+            /* either the dev_port or the dev_id file will have the port of
+             * this iface. (for more details, review the code of ibdev2netdev). */
+            if (ucs_max(atoi(dev_port), dev_id_val) + 1 == port_num) {
+                ucs_strncpy_zero(iface_name, entry->d_name, sizeof(iface_name));
+                status = UCS_OK;
+                break;
+            }
+        }
+    }
+
+    if (status != UCS_OK) {
+        goto out_close_dev_id_f;
+    }
+
+    status = UCS_ERR_IO_ERROR;
+    if (getifaddrs(&ifaddrs) != 0) {
+        goto out_close_dev_id_f;
+    }
+
+    /* get the IP of the found interface */
+    for (ifa = ifaddrs; ifa != NULL; ifa = ifa->ifa_next) {
+        if (!strncmp(ifa->ifa_name, iface_name, sizeof(iface_name)) &&
+            ucs_netif_is_active(ifa->ifa_name) &&
+            (ifa->ifa_addr->sa_family == AF_INET) &&    //ipv4 for now
+            ucs_is_rdmacm_netdev(ifa->ifa_name)) {
+            memcpy(addr, ifa->ifa_addr, sizeof(struct sockaddr_in));
+            /* The port will be set by the iface_addr (or ep_addr for rc) */
+            status = UCS_OK;
+            break;
+        }
+    }
+
+    freeifaddrs(ifaddrs);
+
+out_close_dev_id_f:
+    fclose(dev_id_f);
+out_close_dev_port_f:
+    fclose(dev_port_f);
+out_close_dir:
+    closedir(dir);
+out:
+    return status;
+}
+
+void uct_ib_address_pack(uct_ib_device_t *dev, uint8_t port_num,
+                         uct_ib_address_type_t type,
                          const union ibv_gid *gid, uint16_t lid,
+                         int sockaddr_connect,
                          uct_ib_address_t *ib_addr)
 {
     void *ptr = ib_addr + 1;
+    char ip[UCS_SOCKADDR_STRING_LEN] = {0};
+    struct sockaddr_storage addr;
+    ucs_status_t status;
 
     ib_addr->flags = 0;
 
@@ -534,19 +652,35 @@ void uct_ib_address_pack(uct_ib_device_t *dev, uct_ib_address_type_t type,
     } else {
         /* RoCE */
         ib_addr->flags |= UCT_IB_ADDRESS_FLAG_LINK_LAYER_ETH;
-        /* in this case we don't use the lid and set the GID flag */
-        ib_addr->flags |= UCT_IB_ADDRESS_FLAG_GID;
-        /* uint8_t raw[16]; */
-        memcpy(ptr, gid->raw, sizeof(gid->raw) * sizeof(uint8_t));
-    }
 
+        if (!sockaddr_connect) {
+            /* in this case we don't use the lid and set the GID flag */
+            ib_addr->flags |= UCT_IB_ADDRESS_FLAG_GID;
+            /* uint8_t raw[16]; */
+            memcpy(ptr, gid->raw, sizeof(gid->raw) * sizeof(uint8_t));
+        } else {
+            /* get the port's sockaddr */
+            status = uct_ib_get_port_sockaddr(dev, port_num, &addr);
+            if (status != UCS_OK) {
+                ucs_error("No IP on the interface");
+                return;
+            }
+            /* in this case we pack the port's sockaddr */
+            ib_addr->flags |= UCT_IB_ADDRESS_FLAG_SOCKADDR;
+            memcpy(ptr, &addr, sizeof(struct sockaddr_in)); //ipv4 for now
+            ucs_debug(UCT_IB_IFACE_FMT" packed sockaddr: %s",
+                      uct_ib_device_name(dev), port_num,
+                      ucs_sockaddr_str((struct sockaddr *)ptr, ip, sizeof(ip)));
+        }
+    }
 }
 
 void uct_ib_address_unpack(const uct_ib_address_t *ib_addr, uint16_t *lid,
-                           uint8_t *is_global, union ibv_gid *gid)
+                           uint8_t *is_global, union ibv_gid *gid,
+                           struct sockaddr_storage *addr)
 {
     const void *ptr = ib_addr + 1;
-
+    char ip[UCS_SOCKADDR_STRING_LEN] = {0};
 
     gid->global.subnet_prefix = UCT_IB_LINK_LOCAL_PREFIX; /* Default prefix */
     gid->global.interface_id  = 0;
@@ -580,6 +714,13 @@ void uct_ib_address_unpack(const uct_ib_address_t *ib_addr, uint16_t *lid,
         *is_global = 1;
         ptr += sizeof(uint64_t);
     }
+
+    if (ib_addr->flags & UCT_IB_ADDRESS_FLAG_SOCKADDR) {
+        memcpy(addr, ptr, sizeof(struct sockaddr_in));  //ipv4 for now
+        ucs_debug("unpacked addr: %s",
+                  ucs_sockaddr_str((struct sockaddr *)addr, ip, sizeof(ip)));
+        *is_global = 1;
+    }
 }
 
 const char *uct_ib_address_str(const uct_ib_address_t *ib_addr, char *buf,
@@ -588,9 +729,11 @@ const char *uct_ib_address_str(const uct_ib_address_t *ib_addr, char *buf,
     union ibv_gid gid;
     uint8_t is_global;
     uint16_t lid;
+    struct sockaddr_storage addr;
+    char ip[UCS_SOCKADDR_STRING_LEN] = {0};
     char *p, *endp;
 
-    uct_ib_address_unpack(ib_addr, &lid, &is_global, &gid);
+    uct_ib_address_unpack(ib_addr, &lid, &is_global, &gid, &addr);
 
     if (is_global) {
         p    = buf;
@@ -599,7 +742,12 @@ const char *uct_ib_address_str(const uct_ib_address_t *ib_addr, char *buf,
             snprintf(p, endp - p, "lid %d ", lid);
             p += strlen(p);
         }
-        inet_ntop(AF_INET6, &gid, p, endp - p);
+        if (ib_addr->flags & UCT_IB_ADDRESS_FLAG_SOCKADDR) {
+            snprintf(p, endp - p, "sockaddr %s ",
+                     ucs_sockaddr_str((struct sockaddr *)&addr, ip, sizeof(ip)));
+        } else {
+            inet_ntop(AF_INET6, &gid, p, endp - p);
+        }
     } else {
         snprintf(buf, max, "lid %d", lid);
     }
@@ -816,6 +964,31 @@ uct_ib_device_query_gid(uct_ib_device_t *dev, uint8_t port_num, unsigned gid_ind
     }
 
     return UCS_OK;
+}
+
+uint8_t uct_ib_device_get_gid_index(uct_ib_device_t *dev, uint8_t port_num,
+                                    void *grh_end)
+{
+    union ibv_gid local_gid;
+    void *gid_to_find;
+    int i;
+    size_t len;
+    char p[128];
+
+    for (i = 0; i < 16; i++) {  //can get the gid's table len from attr->gid_tbl_len in ibv_port_attr
+        ibv_query_gid(dev->ibv_context, port_num, i, &local_gid);       //check return value
+        len = uct_ib_iface_calc_gid_len(&local_gid);
+        gid_to_find = (char*)grh_end - len;
+
+        if (!memcmp((union ibv_gid *)gid_to_find, (void*)(&local_gid + 1) - len, len)) {
+            ucs_debug("found gid %s on " UCT_IB_IFACE_FMT" in gid_index %d",
+                      inet_ntop(AF_INET6, &local_gid, p, sizeof(p)),
+                      uct_ib_device_name(dev), port_num, i);
+            return i;
+        }
+    }
+
+    return UCS_MASK(8);
 }
 
 size_t uct_ib_device_odp_max_size(uct_ib_device_t *dev)

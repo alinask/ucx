@@ -53,3 +53,5 @@ AS_IF([test "x$with_rdmacm" != xno],
 )
 
 AM_CONDITIONAL([HAVE_RDMACM], [test "x$rdmacm_happy" != xno])
+AM_COND_IF([HAVE_RDMACM],
+           [AC_DEFINE([HAVE_RDMACM], [1], [Enable the use of RDMACM])])

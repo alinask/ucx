@@ -139,7 +139,6 @@ struct uct_ud_iface {
         unsigned             tx_qp_len;
         unsigned             max_inline;
         int                  check_grh_dgid;
-        unsigned             gid_len;
     } config;
 
     UCS_STATS_NODE_DECLARE(stats);
@@ -238,7 +237,7 @@ static UCS_F_ALWAYS_INLINE void uct_ud_leave(uct_ud_iface_t *iface)
 static UCS_F_ALWAYS_INLINE int
 uct_ud_iface_check_grh(uct_ud_iface_t *iface, void *grh_end, int is_grh_present)
 {
-    void *dest_gid, *local_gid;
+    uint8_t gid_index;
 
     if (!iface->config.check_grh_dgid) {
         return 1;
@@ -249,14 +248,24 @@ uct_ud_iface_check_grh(uct_ud_iface_t *iface, void *grh_end, int is_grh_present)
         return 1;
     }
 
-    local_gid = (char*)iface->super.gid.raw + (16 - iface->config.gid_len);
-    dest_gid  = (char*)grh_end - iface->config.gid_len;
-
-    if (memcmp(local_gid, dest_gid, iface->config.gid_len)) {
-        UCS_STATS_UPDATE_COUNTER(iface->stats, UCT_UD_IFACE_STAT_RX_DROP, 1);
-        ucs_trace_data("Drop packet with wrong dgid");
+    /* To prevent data corruption where we process a packet that was sent to
+     * a non-existing gid, make sure that the incoming dgid exists on the recv side.
+     * Find the gid_index which holds the gid that was received in the packet's dgid */
+    gid_index = uct_ib_device_get_gid_index(&uct_ib_iface_md(&iface->super)->dev,
+                                            iface->super.config.port_num,
+                                            grh_end);
+    if (gid_index == UCS_MASK(8)) {
+        ucs_warn("Drop packet with wrong dgid (the dgid isn't found on the host)");
         return 0;
     }
+
+    /* TODO: To prevent the above look-up on every incoming packet,
+     * save the gid on which the first packet on this iface was received on.
+     * cache the gid in the ud_iface.
+     * On the next incoming packets, check if the incoming dgid is the same as
+     * the cached one. If yes, process the data. If not, search for the incoming
+     * gid in the gid_table. If can find it, process the data and save the new gid
+     * on the iface. If can't find it, drop the packet. */
 
     return 1;
 }

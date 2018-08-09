@@ -216,6 +216,7 @@ typedef struct uct_rc_ep_address {
     uct_ib_uint24_t  tm_qp_num;
 #endif
     uint8_t          atomic_mr_id;
+    in_port_t        sockaddr_port;
 } UCS_S_PACKED uct_rc_ep_address_t;
 
 

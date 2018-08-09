@@ -5,6 +5,7 @@
 */
 
 #include "ib_iface.h"
+#include "ib_sockaddr.h"
 
 #include <uct/base/uct_md.h>
 #include <ucs/arch/bitops.h>
@@ -156,6 +157,9 @@ ucs_config_field_t uct_ib_iface_config_table[] = {
    ucs_offsetof(uct_ib_iface_config_t, enable_res_domain), UCS_CONFIG_TYPE_BOOL},
 #endif
 
+  {"SOCKADDR_CONNECT", "y",
+   "Enable connecting to remote peer through a sockaddr (used with RoCE v2)",
+   ucs_offsetof(uct_ib_iface_config_t, sockaddr_connect), UCS_CONFIG_TYPE_BOOL},
 
   {NULL}
 };
@@ -204,8 +208,10 @@ ucs_status_t uct_ib_iface_get_device_address(uct_iface_h tl_iface,
                                              uct_device_addr_t *dev_addr)
 {
     uct_ib_iface_t *iface = ucs_derived_of(tl_iface, uct_ib_iface_t);
-    uct_ib_address_pack(uct_ib_iface_device(iface), iface->addr_type,
-                        &iface->gid, uct_ib_iface_port_attr(iface)->lid,
+    uct_ib_address_pack(uct_ib_iface_device(iface), iface->config.port_num,
+                        iface->addr_type, &iface->gid,
+                        uct_ib_iface_port_attr(iface)->lid,
+                        iface->config.sockaddr_connect,
                         (void*)dev_addr);
     return UCS_OK;
 }
@@ -219,35 +225,41 @@ int uct_ib_iface_is_reachable(const uct_iface_h tl_iface, const uct_device_addr_
     uint8_t is_global;
     uint16_t lid;
     int is_local_ib;
+    struct sockaddr_storage addr;
 
-    uct_ib_address_unpack(ib_addr, &lid, &is_global, &gid);
+    uct_ib_address_unpack(ib_addr, &lid, &is_global, &gid, &addr);
 
-    ucs_assert(iface->addr_type < UCT_IB_ADDRESS_TYPE_LAST);
-    switch (iface->addr_type) {
-    case UCT_IB_ADDRESS_TYPE_LINK_LOCAL:
-    case UCT_IB_ADDRESS_TYPE_SITE_LOCAL:
-    case UCT_IB_ADDRESS_TYPE_GLOBAL:
-         is_local_ib = 1;
-         break;
-    case UCT_IB_ADDRESS_TYPE_ETH:
-         is_local_ib = 0;
-         break;
-    default:
-         ucs_fatal("Unknown address type %d", iface->addr_type);
-         break;
-    }
-
-    if (is_local_ib && (ib_addr->flags & UCT_IB_ADDRESS_FLAG_LINK_LAYER_IB)) {
-        /* same subnet prefix */
-        return gid.global.subnet_prefix == iface->gid.global.subnet_prefix;
-    } else if (!is_local_ib && (ib_addr->flags & UCT_IB_ADDRESS_FLAG_LINK_LAYER_ETH)) {
-        /* there shouldn't be a lid and the gid flag should be on */
-        ucs_assert(ib_addr->flags & UCT_IB_ADDRESS_FLAG_GID);
-        ucs_assert(!(ib_addr->flags & UCT_IB_ADDRESS_FLAG_LID));
-        return 1;
+    if (ib_addr->flags & UCT_IB_ADDRESS_FLAG_SOCKADDR) {
+        return uct_ib_is_sockaddr_accessible((struct sockaddr *)&addr,
+                                             UCT_SOCKADDR_ACC_REMOTE, 0.5);
     } else {
-        /* local and remote have different link layers and therefore are unreachable */
-        return 0;
+        ucs_assert(iface->addr_type < UCT_IB_ADDRESS_TYPE_LAST);
+        switch (iface->addr_type) {
+        case UCT_IB_ADDRESS_TYPE_LINK_LOCAL:
+        case UCT_IB_ADDRESS_TYPE_SITE_LOCAL:
+        case UCT_IB_ADDRESS_TYPE_GLOBAL:
+            is_local_ib = 1;
+            break;
+        case UCT_IB_ADDRESS_TYPE_ETH:
+            is_local_ib = 0;
+            break;
+        default:
+            ucs_fatal("Unknown address type %d", iface->addr_type);
+            break;
+        }
+
+        if (is_local_ib && (ib_addr->flags & UCT_IB_ADDRESS_FLAG_LINK_LAYER_IB)) {
+            /* same subnet prefix */
+            return gid.global.subnet_prefix == iface->gid.global.subnet_prefix;
+        } else if (!is_local_ib && (ib_addr->flags & UCT_IB_ADDRESS_FLAG_LINK_LAYER_ETH)) {
+            /* there shouldn't be a lid and the gid flag should be on */
+            ucs_assert(ib_addr->flags & UCT_IB_ADDRESS_FLAG_GID);
+            ucs_assert(!(ib_addr->flags & UCT_IB_ADDRESS_FLAG_LID));
+            return 1;
+        } else {
+            /* local and remote have different link layers and therefore are unreachable */
+            return 0;
+        }
     }
 }
 
@@ -597,6 +609,18 @@ static void uct_ib_iface_res_domain_cleanup(uct_ib_iface_res_domain_t *res_domai
 #endif
 }
 
+void uct_ib_iface_fill_ah_from_sockaddr(struct sockaddr_storage *addr,
+                                        struct ibv_ah_attr *ah_attr)
+{
+    uct_ib_sockaddr_fill_ah_attr(addr, ah_attr);
+}
+
+static void uct_ib_iface_sockaddr_event_handler(int fd, void *arg)
+{
+    uct_ib_iface_t *iface = arg;
+    uct_ib_sockaddr_server_event_handler(iface);
+}
+
 /**
  * @param rx_headroom   Headroom requested by the user.
  * @param rx_priv_len   Length of transport private data to reserve (0 if unused)
@@ -652,6 +676,7 @@ UCS_CLASS_INIT_FUNC(uct_ib_iface_t, uct_ib_iface_ops_t *ops, uct_md_h md,
     self->config.port_num           = port_num;
     self->config.sl                 = config->sl;
     self->config.traffic_class      = config->traffic_class;
+    self->config.sockaddr_connect   = config->sockaddr_connect;
     self->release_desc.cb           = uct_ib_iface_release_desc;
 
     self->config.enable_res_domain  = config->enable_res_domain;
@@ -742,7 +767,27 @@ UCS_CLASS_INIT_FUNC(uct_ib_iface_t, uct_ib_iface_ops_t *ops, uct_md_h md,
         self->addr_type = config->addr_type;
     }
 
-    self->addr_size  = uct_ib_address_size(self->addr_type);
+    self->addr_size  = uct_ib_address_size(self->addr_type, self->config.sockaddr_connect);
+
+    if (self->config.sockaddr_connect) {
+        status = uct_ib_sockaddr_setup_server_side(self);
+        if (status != UCS_OK) {
+            goto err_destroy_recv_cq;
+        }
+
+        status = ucs_async_set_event_handler(UCS_ASYNC_MODE_THREAD,
+                                             self->event_ch->fd, POLLIN,
+                                             uct_ib_iface_sockaddr_event_handler,
+                                             self, self->super.worker->async);
+        if (status != UCS_OK) {
+            ucs_error("failed to set event handler");
+            goto err_destroy_server_side;
+        }
+
+        ucs_debug("iface %p (cm_id %p): %s:%d using sockaddr_port %d fd %d",
+                  self, self->cm_id, uct_ib_device_name(dev), port_num,
+                  ntohs(rdma_get_src_port(self->cm_id)), self->event_ch->fd);
+    }
 
     ucs_debug("created uct_ib_iface_t headroom_ofs %d payload_ofs %d hdr_ofs %d data_sz %d",
               self->config.rx_headroom_offset, self->config.rx_payload_offset,
@@ -750,6 +795,8 @@ UCS_CLASS_INIT_FUNC(uct_ib_iface_t, uct_ib_iface_ops_t *ops, uct_md_h md,
 
     return UCS_OK;
 
+err_destroy_server_side:
+    uct_ib_sockaddr_destroy_server_side(self);
 err_destroy_recv_cq:
     ibv_destroy_cq(self->cq[UCT_IB_DIR_RX]);
 err_destroy_send_cq:
@@ -789,6 +836,13 @@ static UCS_CLASS_CLEANUP_FUNC(uct_ib_iface_t)
         uct_worker_tl_data_put(self->res_domain, uct_ib_iface_res_domain_cleanup);
     }
     ucs_free(self->path_bits);
+
+    if (self->config.sockaddr_connect) {
+        ucs_debug("iface %p destroying port %d fd %d", self,
+                   ntohs(rdma_get_src_port(self->cm_id)), self->event_ch->fd);
+        ucs_async_remove_handler(self->event_ch->fd, 1);
+        uct_ib_sockaddr_destroy_server_side(self);
+    }
 }
 
 UCS_CLASS_DEFINE(uct_ib_iface_t, uct_base_iface_t);
@@ -1055,3 +1109,35 @@ ucs_status_t uct_ib_iface_arm_cq(uct_ib_iface_t *iface,
     return UCS_OK;
 }
 
+/* Calculate real GIDs len. Can be either 16 (RoCEv1 or RoCEv2/IPv6)
+ * or 4 (RoCEv2/IPv4). This len is used for packets filtering by DGIDs.
+ *
+ * According to Annex17_RoCEv2 (A17.4.5.2):
+ * "The first 40 bytes of user posted UD Receive Buffers are reserved for the L3
+ * header of the incoming packet (as per the InfiniBand Spec Section 11.4.1.2).
+ * In RoCEv2, this area is filled up with the IP header. IPv6 header uses the
+ * entire 40 bytes. IPv4 headers use the 20 bytes in the second half of the
+ * reserved 40 bytes area (i.e. offset 20 from the beginning of the receive
+ * buffer). In this case, the content of the first 20 bytes is undefined." */
+size_t uct_ib_iface_calc_gid_len(union ibv_gid *gid)
+{
+    uint16_t *gid_u16 = (uint16_t*)gid->raw;
+
+    /* Make sure that daddr in IPv4 resides in the last 4 bytes in GRH */
+    UCS_STATIC_ASSERT((UCT_IB_GRH_LEN - (20 + offsetof(struct iphdr, daddr))) ==
+                      UCT_IPV4_ADDR_LEN);
+
+    /* Make sure that dgid resides in the last 16 bytes in GRH */
+    UCS_STATIC_ASSERT((UCT_IB_GRH_LEN - offsetof(struct ibv_grh, dgid)) ==
+                      UCT_IPV6_ADDR_LEN);
+
+    /* IPv4 mapped to IPv6 looks like: 0000:0000:0000:0000:0000:ffff:????:????,
+     * so check for leading zeroes and verify that 11-12 bytes are 0xff.
+     * Otherwise either RoCEv1 or RoCEv2/IPv6 are used. */
+    if (gid_u16[0] == 0x0000) {
+        ucs_assert_always(gid_u16[5] == 0xffff);
+        return UCT_IPV4_ADDR_LEN;
+    } else {
+        return UCT_IPV6_ADDR_LEN;
+    }
+}

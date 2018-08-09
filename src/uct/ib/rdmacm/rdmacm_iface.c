@@ -74,20 +74,6 @@ static uct_iface_ops_t uct_rdmacm_iface_ops = {
     .iface_get_address        = uct_rdmacm_iface_get_address
 };
 
-ucs_status_t uct_rdmacm_resolve_addr(struct rdma_cm_id *cm_id,
-                                     struct sockaddr *addr, int timeout_ms,
-                                     ucs_log_level_t log_level)
-{
-    char ip_port_str[UCS_SOCKADDR_STRING_LEN];
-
-    if (rdma_resolve_addr(cm_id, NULL, addr, timeout_ms)) {
-        ucs_log(log_level, "rdma_resolve_addr(addr=%s) failed: %m",
-                ucs_sockaddr_str(addr, ip_port_str, UCS_SOCKADDR_STRING_LEN));
-        return UCS_ERR_IO_ERROR;
-    }
-    return UCS_OK;
-}
-
 void uct_rdmacm_iface_client_start_next_ep(uct_rdmacm_iface_t *iface)
 {
     ucs_status_t status;
